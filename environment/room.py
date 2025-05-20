@@ -1,17 +1,42 @@
+from abc import ABC, abstractmethod
+
+
 from person import *
 from light import *
-from abc import ABC, abstractmethod, abstractproperty
+from door import *
+from o2sys.pressurizer import *
+from o2sys.air_compartment import *
 
 
-class Room(ABC):
-    def __init__(self, name, volume):
-        self.name = name
+class Room(AirCompartment):
+    def __init__(self,
+                 name: str,
+                 dims: tuple[float | int, float | int, float | int],
+                 pressurizer: Pressurizer | None = None,
+                 lights: list[Light] = None,
+                 doors: list[Door] = None):
+        super().__init__(
+            name,
+            dims[0] * dims[1] * dims[2]
+        )
 
         self.people: list[Person] = []
-        self.lights: list[Light] = []
+        self.lights: list[Light] = lights
+        self.doors: list[Door] = doors
 
-        self.volume = volume
+        self.pressurizer = pressurizer
 
-        self.o2: float = 0
-        self.co2: float = 0
-        
+    def __repr__(self) -> str:
+        return self.name
+
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+    @abstractmethod
+    def update_systems(self) -> None:
+        """
+        update all systems in the room
+        """
+        pass
+
+
