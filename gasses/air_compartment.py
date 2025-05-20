@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from o2sys.pressurizer import *
+from gasses.pressurizer import *
 from air_graph import AirGraph
 
 

@@ -2,7 +2,7 @@
 from room import *
 from door import Door
 from nuclear_reactor import *
-from o2sys.air_graph import *
+from gasses.air_graph import *
 
 
 class Habitat(AirGraph):

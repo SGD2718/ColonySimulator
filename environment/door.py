@@ -1,6 +1,6 @@
 from room import *
 from habitat import *
-from o2sys.air_valve import *
+from gasses.air_valve import *
 
 
 class Door(AirValve):
@@ -14,7 +14,6 @@ class Door(AirValve):
                  room1: Room | None = None,
                  room2: Room | None = None):
         """
-        :param parent: parent habitat
         :param name: door name
         :param is_airtight: whether the door is airtight
         :param dims: (width, height) tuple of the door dimensions in meters
@@ -30,9 +29,28 @@ class Door(AirValve):
         )
 
         self._is_airtight = is_airtight
+        self.is_locked = False
 
     def is_airtight(self) -> bool:
         """
         :return: True if the door is airtight, False otherwise
         """
         return self._is_airtight
+
+    def open(self) -> None:
+        if not self.is_locked:
+            super().open()
+
+    def close(self) -> None:
+        if not self.is_locked:
+            super().close()
+
+    def is_locked(self) -> bool:
+        return self.is_locked
+
+    def lock(self) -> None:
+        if not self._is_open:
+            self.is_locked = True
+
+    def unlock(self) -> None:
+        self.is_locked = False

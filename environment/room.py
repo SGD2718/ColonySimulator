@@ -4,8 +4,8 @@ from abc import ABC, abstractmethod
 from person import *
 from light import *
 from door import *
-from o2sys.pressurizer import *
-from o2sys.air_compartment import *
+from gasses.pressurizer import *
+from gasses.air_compartment import *
 
 
 class Room(AirCompartment):
