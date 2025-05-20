@@ -1,8 +1,3 @@
-from abc import ABC, abstractmethod
-from gasses.pressurizer import *
-from air_graph import AirGraph
-
-
 class AirCompartment:
     def __init__(self, name: str, volume: float):
         self.name = name
@@ -25,6 +20,12 @@ class AirCompartment:
 
     def get_co2_density(self) -> float:
         return self.co2_density
+
+    def get_o2_mass(self) -> float:
+        return self.volume * self.o2_density
+
+    def get_co2_mass(self) -> float:
+        return self.volume * self.co2_density
 
     def get_volume(self) -> float:
         return self.volume
@@ -49,6 +50,12 @@ class Atmosphere(AirCompartment):
 
     def get_co2_density(self) -> float:
         return 0.0191
+
+    def get_o2_mass(self) -> float:
+        return 0
+
+    def get_co2_mass(self) -> float:
+        return 0
 
     def apply_flux(self, o2_density_flux: float, co2_density_flux: float, dt: float = 0.033) -> None:
         pass

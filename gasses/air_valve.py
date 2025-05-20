@@ -1,11 +1,10 @@
-from air_graph import AirGraph
-from air_compartment import AirCompartment
+import chemicals
 import math
 
 
 class AirValve:
-    O2_GAS_CONSTANT = 259.820619394  # J/kg K
-    CO2_GAS_CONSTANT = 188.915903565  # J/kg K
+
+    from air_compartment import AirCompartment
 
     def __init__(self,
                  name: str,
@@ -83,8 +82,8 @@ class AirValve:
             self._co2_flux = 0
             return
 
-        two_rt_o2 = 2 * AirValve.O2_GAS_CONSTANT * temperature
-        two_rt_co2 = 2 * AirValve.CO2_GAS_CONSTANT * temperature
+        two_rt_o2 = 2 * gasses.O2.gas_constant * temperature
+        two_rt_co2 = 2 * gasses.CO2.gas_constant * temperature
 
         def density_flux(rho1, rho2, two_rt, area, volume):
             return rho1 * area / volume * math.sqrt(two_rt * math.log(rho2 / rho1))
