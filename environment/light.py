@@ -68,7 +68,7 @@ class Light(Subsystem):
         :param dt: time step between updates
         :return: heat produced by the subsystem
         """
-        energy_used = self.power_source.consume_energy(self._power * dt)
+        energy_used = self.power_source.consume_electricity(self._power * dt)
         heat = self._power * dt
         energy_used -= heat
         return heat
