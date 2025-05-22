@@ -4,8 +4,12 @@ from power_source import PowerSource
 
 class Subsystem(ABC):
 
-    def __init__(self, power_source: PowerSource):
-        self.power_source = power_source
+    def __init__(self, name: str, power_source: PowerSource):
+        self.name = name
+        self.power_source: PowerSource = power_source
+
+    def __repr__(self):
+        return self.name
 
     @abstractmethod
     def update(self, dt: float = 0.0333) -> float:

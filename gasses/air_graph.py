@@ -1,5 +1,5 @@
-import networkx as nx
-import math
+import numpy as np
+import chemicals as chem
 
 
 class AirGraph:
@@ -11,27 +11,45 @@ class AirGraph:
                  name: str,
                  compartments: list[AirCompartment],
                  valves: list[AirValve],
-                 temperature: float = 298.15):
+                 temperature: float = 298.15,
+                 heat_loss_rate: float = 0.05):
+        """
 
+        :param name:
+        :param compartments:
+        :param valves:
+        :param temperature:
+        :param heat_loss_rate: proportion of heat loss per second
+        """
         self.name = name
         self.compartments = compartments
+        self.heat_loss_rate = heat_loss_rate
         self.valves = valves
 
         self.temperature = temperature
 
-    def _update_temperature(self, heat):
-        total_o2_mass = 0
-        total_co2_mass = 0
+    def _update_temperature(self, heat: float, dt: float = 0.0333, **kwargs) -> None:
+        mode = kwargs.get('mode', 'power')
 
-        for compartments in self.compartments:
-            total_o2_mass += compartments.get_o2_density() * compartments.get_volume()
-            total_co2_mass += compartments.get_co2_density() * compartments.get_volume()
+        total_masses = np.add.reduce((c.get_densities() * c.get_volume() for c in self.compartments))
+        heat_capacities = np.asarray(
+            [
+                chem.O2.specific_heat_capacity(self.temperature),
+                chem.CO2.specific_heat_capacity(self.temperature),
+                chem.N2.specific_heat_capacity(self.temperature),
+                chem.H2O.specific_heat_capacity(self.temperature)
+            ],
+            dtype=float
+        )
 
-        # Q = (m1c1 + m2c2)∆T => ∆T = Q / ∑mc
-        self.temperature += (heat /
-                             (gasses.O2.specific_heat_capacity(self.temperature) * total_o2_mass +
-                              gasses.CO2.specific_heat_capacity(self.temperature) + total_co2_mass))
+        # Q = ∑mc∆T => ∆T = Q / ∑mc
+        if mode == "power":
+            q_in = heat * dt
+        else:
+            q_in = float(heat)
 
+        self.temperature = (self.temperature * (self.heat_loss_rate ** dt) +
+                            q_in / (np.dot(heat_capacities, total_masses)))
 
     def _update_airflow(self, dt: float = 0.0333) -> None:
         """
@@ -43,3 +61,6 @@ class AirGraph:
 
         for valve in self.valves:
             valve.apply_flux(dt)
+
+    def get_temperature(self) -> float:
+        return self.temperature

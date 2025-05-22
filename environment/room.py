@@ -1,30 +1,28 @@
 from abc import ABC, abstractmethod
-
-
 from person import *
 from light import *
-from door import *
-from gasses.pressurizer import *
+from door import Door
 from gasses.air_compartment import *
+from subsystem import Subsystem
 
 
 class Room(AirCompartment):
+    from habitat import Habitat
+
     def __init__(self,
+                 parent: Habitat,
                  name: str,
                  dims: tuple[float | int, float | int, float | int],
-                 pressurizer: Pressurizer | None = None,
-                 lights: list[Light] = None,
+                 systems: list[Subsystem] = None,
                  doors: list[Door] = None):
         super().__init__(
+            parent,
             name,
             dims[0] * dims[1] * dims[2]
         )
 
-        self.people: list[Person] = []
-        self.lights: list[Light] = lights
+        self.systems: list[Subsystem] = systems
         self.doors: list[Door] = doors
-
-        self.pressurizer = pressurizer
 
     def __repr__(self) -> str:
         return self.name
@@ -32,11 +30,15 @@ class Room(AirCompartment):
     def __hash__(self) -> int:
         return hash(self.name)
 
-    @abstractmethod
-    def update_systems(self) -> None:
+    def update_systems(self, dt: float = 0.0333) -> float:
         """
         update all systems in the room
         """
-        pass
+        heat = 0
+        for system in self.systems:
+            heat += system.update(dt)
+
+        return heat
+
 
 

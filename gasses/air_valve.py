@@ -1,5 +1,7 @@
-import chemicals
+import chemicals as chem
 import math
+import air
+import numpy as np
 
 
 class AirValve:
@@ -24,8 +26,7 @@ class AirValve:
         self._closed_area = closed_area
         self._is_open = False
 
-        self._o2_flux: float = 0
-        self._co2_flux: float = 0
+        self._flux = np.zeros((4,), dtype=float)
 
         self.compartment1 = compartment1
         self.compartment2 = compartment2
@@ -78,45 +79,19 @@ class AirValve:
         """
         cross_sectional_area = self.get_area()
         if cross_sectional_area == 0:
-            self._o2_flux = 0
-            self._co2_flux = 0
+            self._flux = np.zeros((4,), dtype=float)
             return
 
-        two_rt_o2 = 2 * gasses.O2.gas_constant * temperature
-        two_rt_co2 = 2 * gasses.CO2.gas_constant * temperature
+        two_rt = (2 * temperature) * air.GAS_CONSTANTS
+        upstream_densities = np.maximum(self.compartment1.densities, self.compartment2.densities)
+        downstream_densities = np.minimum(self.compartment1.densities, self.compartment2.densities)
+        upstream_volumes = np.where(self.compartment1.densities > self.compartment2.densities,
+                                    self.compartment1.volume, -self.compartment2.volume)
 
-        def density_flux(rho1, rho2, two_rt, area, volume):
-            return rho1 * area / volume * math.sqrt(two_rt * math.log(rho2 / rho1))
+        self._flux = (upstream_densities * cross_sectional_area / upstream_volumes *
+                      np.sqrt(two_rt * np.log(downstream_densities / upstream_densities)))
 
-        if self.compartment1.get_o2_density() > self.compartment2.get_o2_density():
-            self._o2_flux = density_flux(
-                self.compartment1.get_o2_density(),
-                self.compartment2.get_o2_density(),
-                two_rt_o2,
-                self.get_area(),
-                self.compartment1.get_volume())
-        else:
-            self._o2_flux = -density_flux(
-                self.compartment2.get_o2_density(),
-                self.compartment1.get_o2_density(),
-                two_rt_o2,
-                self.get_area(),
-                self.compartment2.get_volume())
-
-        if self.compartment1.get_co2_density() > self.compartment2.get_co2_density():
-            self._co2_flux = density_flux(
-                self.compartment1.get_co2_density(),
-                self.compartment2.get_co2_density(),
-                two_rt_co2,
-                cross_sectional_area,
-                self.compartment1.get_volume())
-        else:
-            self._co2_flux = -density_flux(
-                self.compartment2.get_co2_density(),
-                self.compartment1.get_co2_density(),
-                two_rt_co2,
-                cross_sectional_area,
-                self.compartment2.get_volume())
+        self._flux *= self.compartment1.filter * self.compartment2.filter
 
     def apply_flux(self, dt: float = 0.0333) -> None:
         """
@@ -124,5 +99,5 @@ class AirValve:
         :param dt: change in time since last update
         """
         if self._is_open:
-            self.compartment1.apply_flux(self._o2_flux, self._co2_flux, dt)
-            self.compartment2.apply_flux(-self._o2_flux, -self._co2_flux, dt)
+            self.compartment1.apply_flux(self._flux, dt)
+            self.compartment2.apply_flux(-self._flux, dt)

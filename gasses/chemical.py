@@ -12,13 +12,16 @@ class Chemical:
     def __str__(self):
         return self.name
 
+    def __eq__(self, other):
+        return self.name == other.name
+
     def __add__(self, other):
         """
         chemical1.__add__(chemical2) -> chemical1 + chemical2
         adds chemical1 to chemical2
-        :param other: another chemical
+        :param other: another chemical.
         :type other: Chemical
-        :return: a new chemical
+        :return: a new chemical.
         :rtype: Chemical
         """
         return Chemical(self.name + other.name, self.molar_mass + other.molar_mass)

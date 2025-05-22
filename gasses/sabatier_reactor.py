@@ -1,6 +1,6 @@
 from subsystem import Subsystem
 from power_source import PowerSource
-import chemicals
+import chemicals as chem
 
 
 class SabatierReactor(Subsystem):
@@ -19,11 +19,11 @@ class SabatierReactor(Subsystem):
     _BASE_EFFICIENCY = 1
     _BASE_POWER = 700
 
-    REACTION_RATE = _BASE_KG_CH4_PER_DAY / 86400 / gasses.CH4.molar_mass_kg_mol / (_BASE_POWER * _BASE_EFFICIENCY)
-    CH4_REACTION_RATE = REACTION_RATE * gasses.CH4.molar_mass_kg_mol
-    H2O_REACTION_RATE = 2 * REACTION_RATE * gasses.H2O.molar_mass_kg_mol
-    H2_REACTION_RATE = 4 * REACTION_RATE * gasses.H2.molar_mass_kg_mol
-    CO2_REACTION_RATE = REACTION_RATE * gasses.CO2.molar_mass_kg_mol
+    REACTION_RATE = _BASE_KG_CH4_PER_DAY / 86400 / chem.CH4.molar_mass_kg_mol / (_BASE_POWER * _BASE_EFFICIENCY)
+    CH4_REACTION_RATE = REACTION_RATE * chem.CH4.molar_mass_kg_mol
+    H2O_REACTION_RATE = 2 * REACTION_RATE * chem.H2O.molar_mass_kg_mol
+    H2_REACTION_RATE = 4 * REACTION_RATE * chem.H2.molar_mass_kg_mol
+    CO2_REACTION_RATE = REACTION_RATE * chem.CO2.molar_mass_kg_mol
     ENTHALPY_RATE = 206000 * REACTION_RATE
 
     def __init__(self,
@@ -40,11 +40,10 @@ class SabatierReactor(Subsystem):
         :param efficiency: efficiency
         :param energy_tolerance: maximum energy shortage for operation to occur
         """
-        super().__init__(power_source)
+        super().__init__(name, power_source)
 
         self._efficiency = efficiency
         self.power_consumption = power_consumption
-        self.name = name
 
         self._energy_to_start = 0
         self._co2 = 0
@@ -71,24 +70,31 @@ class SabatierReactor(Subsystem):
         self._h2o -= amount
         return amount
 
-    def feed_reactants(self, co2_mass_flux: float, h2_mass_flux: float, dt: float = 0.033) -> None:
-        self._h2 += h2_mass_flux * dt
-        self._co2 += co2_mass_flux * dt
+    def feed_reactants(self, co2_mass_flux: float, h2_mass_flux: float, dt: float = 0.033, **kwargs) -> None:
+        mode = kwargs.get('mode', 'flux')
+        if mode == 'flux':
+            self._h2 += h2_mass_flux * dt
+            self._co2 += co2_mass_flux * dt
+        else:
+            self._h2 += h2_mass_flux
+            self._co2 += co2_mass_flux
 
-    def update(self, dt: float = 0.033, co2_mass_flux: float = 0, h2_mass_flux: float = 0) -> float:
+    def update(self, dt: float = 0.033, **kwargs) -> float:
         """
         React the Sabatier reactor
-        :param co2_mass_flux: influx of CO gas
-        :param h2_mass_flux: influx of H2 gas
         :param dt: time step between updates
+        :keyword co2_mass_flux: influx of CO gas
+        :keyword h2_mass_flux: influx of H2 gas
         :return: heat produced by the subsystem
         """
 
-        #
+        co2_mass_flux = kwargs.get("co2_mass_flux", 0)
+        h2_mass_flux = kwargs.get("h2_mass_flux", 0)
+
         self.feed_reactants(co2_mass_flux, h2_mass_flux, dt)
         energy_used = self.power_consumption * dt
-        self._energy_to_start = max(self._energy_to_start + energy_used - self.power_source.consume_energy(energy_used),
-                                    0)
+        self._energy_to_start = max(self._energy_to_start + energy_used -
+                                    self.power_source.consume_electricity(energy_used, mode="energy"), 0)
 
         heat = energy_used * (1 - self._efficiency)
         energy_used -= heat
