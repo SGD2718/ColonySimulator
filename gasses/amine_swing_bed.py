@@ -7,7 +7,7 @@ import chemicals as chem  # User provided
 import math
 
 
-class AmineSwingBedSystem(Subsystem):
+class AmineSwingBed(Subsystem):
     """
     Models an amine swing bed system for CO2 and H2O capture.
     The system cycles through adsorption, desorption, and cooling phases.
