@@ -2,11 +2,10 @@ import chemicals as chem
 import math
 import air
 import numpy as np
+from air_compartment import *
 
 
 class AirValve:
-
-    from air_compartment import AirCompartment
 
     def __init__(self,
                  name: str,
@@ -85,13 +84,13 @@ class AirValve:
         two_rt = (2 * temperature) * air.GAS_CONSTANTS
         upstream_densities = np.maximum(self.compartment1.densities, self.compartment2.densities)
         downstream_densities = np.minimum(self.compartment1.densities, self.compartment2.densities)
-        upstream_volumes = np.where(self.compartment1.densities > self.compartment2.densities,
-                                    self.compartment1.volume, -self.compartment2.volume)
 
-        self._flux = (upstream_densities * cross_sectional_area / upstream_volumes *
-                      np.sqrt(two_rt * np.log(downstream_densities / upstream_densities)))
+        downstream_directions = np.where(self.compartment2.densities > self.compartment1.densities, 1, -1)
 
+        self._flux = downstream_directions * (downstream_densities * cross_sectional_area *
+                                              np.sqrt(two_rt * np.log(upstream_densities / downstream_densities))),
         self._flux *= self.compartment1.filter * self.compartment2.filter
+        self._flux = np.nan_to_num(self._flux, nan=0.0)
 
     def apply_flux(self, dt: float = 0.0333) -> None:
         """

@@ -1,333 +1,349 @@
-# amine_swing_bed.py
-# Credit: ChatGPT, model o3
-import math
-from typing import Optional, List
 import numpy as np
-
-import chemicals as chem
-import air
-from gasses.sabatier_reactor import SabatierReactor
-
-from subsystem import Subsystem
-from gasses.air_compartment import AirCompartment
-from power_source import PowerSource
+from subsystem import Subsystem  # User provided
+from power_source import PowerSource  # User provided
+from air_compartment import AirCompartment  # User provided
+import air  # User provided
+import chemicals as chem  # User provided
+import math
 
 
-class Sorbent:
+class AmineSwingBedSystem(Subsystem):
     """
-    Simple container for sorbent properties.
-    All values are referenced to 25 °C (298 K).
-    Units:
-        k2                  m³·kmol⁻¹·s⁻¹
-        henry_co2           kmol·m⁻³·kPa⁻¹
-        delta_h_abs         kJ·kmol⁻¹
-        density             kg·m⁻³ of packed bed (solids+voids)
+    Models an amine swing bed system for CO2 and H2O capture.
+    The system cycles through adsorption, desorption, and cooling phases.
     """
-    def __init__(self,
-                 name: str,
-                 k2: float,
-                 henry_co2: float,
-                 delta_h_abs: float,
-                 density: float,
-                 default_void_frac: float = 0.36):
-        self.name = name
-        self.k2 = k2
-        self.henry_co2 = henry_co2
-        self.delta_h_abs = delta_h_abs              # kJ kmol⁻¹
-        self.density = density
-        self.void_frac = default_void_frac
 
+    # --- Class Constants (Static Variables) ---
+    R_UNIVERSAL_GAS_CONSTANT = 8.314462618  # J/(mol·K)
+    CO2_MOLAR_MASS_KG_MOL = chem.CO2.molar_mass_kg_mol if hasattr(chem, 'CO2') and hasattr(chem.CO2,
+                                                                                           'molar_mass_kg_mol') else 0.04401
+    H2O_MOLAR_MASS_KG_MOL = chem.H2O.molar_mass_kg_mol if hasattr(chem, 'H2O') and hasattr(chem.H2O,
+                                                                                           'molar_mass_kg_mol') else 0.018015
 
-# ---------------------------------------------------------------------------
-#   Built-in sorbents (extend at will)
-# ---------------------------------------------------------------------------
-class Sorbents:
-    """Library of built-in sorbents."""
-    MEA_30WT = Sorbent(
-        name="30 wt % MEA on polymer",
-        k2=2.5e3,                      # m³ kmol⁻¹ s⁻¹  (20–30 °C)
-        henry_co2=0.034,               # kmol m⁻³ kPa⁻¹
-        delta_h_abs=96.0,              # kJ kmol⁻¹
-        density=650                    # kg m⁻³ packed cartridge (solid + liquid)
-    )
+    DEFAULT_AMINE_MOLAR_MASS_KG_MOL = 0.06108
+    DEFAULT_AMINE_SOLUTION_DENSITY_KG_M3 = 1015.0
+    DEFAULT_AMINE_SOLUTION_SPECIFIC_HEAT_J_KG_K = 3700.0
+    DEFAULT_HEAT_OF_CO2_ABSORPTION_J_MOL = -85000.0
+    DEFAULT_HEAT_OF_H2O_ABSORPTION_J_MOL = -40650.0
+    DEFAULT_MAX_CO2_LOADING_MOL_CO2_PER_MOL_AMINE = 0.4
+    DEFAULT_MAX_H2O_LOADING_KG_H2O_PER_KG_AMINE_SOLUTION = 0.1
+    DEFAULT_ADSORPTION_RATE_CONSTANT_CO2 = 1.0e-7
+    DEFAULT_ADSORPTION_RATE_CONSTANT_H2O = 5.0e-8
+    DEFAULT_DESORPTION_RATE_CONSTANT_CO2 = 1.0e-4
+    DEFAULT_DESORPTION_RATE_CONSTANT_H2O = 5.0e-5
+    DEFAULT_REGENERATION_ENERGY_DEMAND_J_PER_KG_CO2 = 3.5e6
+    DEFAULT_COOLING_POWER_FACTOR_W_PER_KG_K_DIFF = 10.0
+    DEFAULT_COOLING_SYSTEM_COP = 2.0
+    DEFAULT_ADSORPTION_TEMP_K = 273.15 + 40.0
+    DEFAULT_DESORPTION_TEMP_K = 273.15 + 120.0
+    DEFAULT_COOLING_TEMP_K = DEFAULT_ADSORPTION_TEMP_K
+    DEFAULT_ADSORPTION_CYCLE_TIME_S = 3600.0
+    DEFAULT_DESORPTION_CYCLE_TIME_S = 1800.0
+    DEFAULT_COOLING_CYCLE_TIME_S = 900.0
 
+    _ADSORPTION_PHASE = "adsorption"
+    _DESORPTION_PHASE = "desorption"
+    _COOLING_PHASE = "cooling"
 
-# ---------------------------------------------------------------------------
-#   AmineSwingBed implementation
-# ---------------------------------------------------------------------------
-class AmineSwingBed(Subsystem):
-    """
-    Fast-cycle amine swing-bed CO₂/H₂O scrubber (CAMRAS-like).
+    _NUMERICAL_STABILITY_FACTOR = 1.0 - 1e-7  # Factor to leave a tiny amount to avoid float issues
 
-    State vector per bed (all 25 °C linearisation):
-        L_CO2      [kmol]  – sorbent loading of CO₂
-        L_H2O      [kmol]  – sorbent loading of H₂O
-        P_CO2_g    [kPa]   – gas CO₂ partial pressure in bed void
-        P_H2O_g    [kPa]   – gas H₂O partial pressure in bed void
-    """
-    ROOM_TEMPERATURE = 298.15        # K
-
-    # ---------- constructor ------------------------------------------------
     def __init__(self,
                  name: str,
                  power_source: PowerSource,
-                 parent: AirCompartment,
-                 sabatier_reactor_output: SabatierReactor = None,
-                 **kwargs):
-        """
-        Parameters settable via kwargs (defaults = CAMRAS fast point):
-            power_efficiency           – overall blower η_tot          (dimless)
-            interface_area             – m² per bed
-            bed_volume                 – m³ void volume per bed
-            number_of_beds             – 2
-            sorbent_mass               – kg per bed
-            sorbent_material           – Sorbent object (defaults to 30 wt % MEA)
-            operating_temperature      – K
-            cycle_time                 – s  (full cycle: adsorb+desorb)
-            mea_concentration          – kmol m⁻³ of amine in solution
-            airflow_rate               – m³ s⁻¹ (per online bed in adsorption)
-            active_beds                – list[int] of bed indices initially online
-        """
+                 parent_air_compartment: AirCompartment,
+                 bed_volume_m3: float,
+                 amine_solution_mass_kg: float,
+                 amine_concentration_wt_pct: float,
+                 adsorption_target_temperature_k: float = DEFAULT_ADSORPTION_TEMP_K,
+                 desorption_target_temperature_k: float = DEFAULT_DESORPTION_TEMP_K,
+                 cooling_target_temperature_k: float = DEFAULT_COOLING_TEMP_K,
+                 adsorption_cycle_time_s: float = DEFAULT_ADSORPTION_CYCLE_TIME_S,
+                 desorption_cycle_time_s: float = DEFAULT_DESORPTION_CYCLE_TIME_S,
+                 cooling_cycle_time_s: float = DEFAULT_COOLING_CYCLE_TIME_S,
+                 amine_molar_mass_kg_mol: float = DEFAULT_AMINE_MOLAR_MASS_KG_MOL,
+                 amine_solution_density_kg_m3: float = DEFAULT_AMINE_SOLUTION_DENSITY_KG_M3,
+                 amine_solution_specific_heat_j_kg_k: float = DEFAULT_AMINE_SOLUTION_SPECIFIC_HEAT_J_KG_K,
+                 heat_of_co2_absorption_j_mol: float = DEFAULT_HEAT_OF_CO2_ABSORPTION_J_MOL,
+                 heat_of_h2o_absorption_j_mol: float = DEFAULT_HEAT_OF_H2O_ABSORPTION_J_MOL,
+                 max_co2_loading_mol_co2_per_mol_amine: float = DEFAULT_MAX_CO2_LOADING_MOL_CO2_PER_MOL_AMINE,
+                 max_h2o_loading_kg_h2o_per_kg_amine_solution: float = DEFAULT_MAX_H2O_LOADING_KG_H2O_PER_KG_AMINE_SOLUTION,
+                 adsorption_rate_constant_co2: float = DEFAULT_ADSORPTION_RATE_CONSTANT_CO2,
+                 adsorption_rate_constant_h2o: float = DEFAULT_ADSORPTION_RATE_CONSTANT_H2O,
+                 desorption_rate_constant_co2: float = DEFAULT_DESORPTION_RATE_CONSTANT_CO2,
+                 desorption_rate_constant_h2o: float = DEFAULT_DESORPTION_RATE_CONSTANT_H2O,
+                 regeneration_energy_demand_j_per_kg_co2: float = DEFAULT_REGENERATION_ENERGY_DEMAND_J_PER_KG_CO2,
+                 cooling_power_factor_w_per_kg_k_diff: float = DEFAULT_COOLING_POWER_FACTOR_W_PER_KG_K_DIFF,
+                 cooling_system_cop: float = DEFAULT_COOLING_SYSTEM_COP
+                 ):
         super().__init__(name, power_source)
-        # Store room pointer for later interaction
-        self._parent = parent
-        self.sabatier_reactor_output = sabatier_reactor_output
+        self._parent = parent_air_compartment
+        self.bed_volume_m3 = bed_volume_m3
+        self.amine_solution_mass_kg = amine_solution_mass_kg
+        self.amine_concentration_wt_pct = amine_concentration_wt_pct
+        self.amine_molar_mass_kg_mol = amine_molar_mass_kg_mol
+        self.amine_solution_density_kg_m3 = amine_solution_density_kg_m3
+        self.amine_solution_specific_heat_j_kg_k = amine_solution_specific_heat_j_kg_k
+        self.heat_of_co2_absorption_j_mol = heat_of_co2_absorption_j_mol
+        self.heat_of_h2o_absorption_j_mol = heat_of_h2o_absorption_j_mol
+        self.max_co2_loading_mol_co2_per_mol_amine = max_co2_loading_mol_co2_per_mol_amine
+        self.max_h2o_loading_kg_h2o_per_kg_amine_solution = max_h2o_loading_kg_h2o_per_kg_amine_solution
+        self.adsorption_rate_constant_co2 = adsorption_rate_constant_co2
+        self.adsorption_rate_constant_h2o = adsorption_rate_constant_h2o
+        self.desorption_rate_constant_co2 = desorption_rate_constant_co2
+        self.desorption_rate_constant_h2o = desorption_rate_constant_h2o
+        self.regeneration_energy_demand_j_per_kg_co2 = regeneration_energy_demand_j_per_kg_co2
+        self.cooling_power_factor_w_per_kg_k_diff = cooling_power_factor_w_per_kg_k_diff
+        self.cooling_system_cop = cooling_system_cop
+        self._adsorption_target_temperature_k = adsorption_target_temperature_k
+        self._desorption_target_temperature_k = desorption_target_temperature_k
+        self._cooling_target_temperature_k = cooling_target_temperature_k
+        self._adsorption_cycle_time_s = adsorption_cycle_time_s
+        self._desorption_cycle_time_s = desorption_cycle_time_s
+        self._cooling_cycle_time_s = cooling_cycle_time_s
+        self._current_phase = self._ADSORPTION_PHASE
+        self._time_in_current_phase_s = 0.0
+        self._bed_temperature_k = parent_air_compartment.get_temperature() if parent_air_compartment else self._adsorption_target_temperature_k
+        self._co2_adsorbed_mass_kg = 0.0
+        self._h2o_adsorbed_mass_kg = 0.0
+        self.mass_co2_ready_for_collection_kg = 0.0
+        self.mass_h2o_ready_for_collection_kg = 0.0
 
-        # ------------------------------------------------------------------
-        # Configurable parameters (with defensible, high-performance defaults)
-        # ------------------------------------------------------------------
-        self.power_efficiency = kwargs.get("power_efficiency", 0.18)  # CAMRAS fan
-        self.interface_area = kwargs.get("interface_area", 2.1)       # m²
-        self.bed_volume = kwargs.get("bed_volume", 0.0030)            # m³ (void)
-        self.number_of_beds = kwargs.get("number_of_beds", 2)
-        self.sorbent_material: Sorbent = kwargs.get("sorbent_material", Sorbents.MEA_30WT)
+        self._mass_amine_in_solution_kg = self.amine_solution_mass_kg * (self.amine_concentration_wt_pct / 100.0)
+        if self.amine_molar_mass_kg_mol > 1e-9:
+            self._moles_amine_total_in_solution = self._mass_amine_in_solution_kg / self.amine_molar_mass_kg_mol
+        else:
+            self._moles_amine_total_in_solution = 0.0
 
-        # If sorbent_mass omitted, compute from density*volume
-        self.sorbent_mass = kwargs.get(
-            "sorbent_mass",
-            self.sorbent_material.density * self.bed_volume / (1 - self.sorbent_material.void_frac)
-        )
-        self.operating_temperature = kwargs.get("operating_temperature", self.ROOM_TEMPERATURE)
-        self.cycle_time = kwargs.get("cycle_time", 780.0)             # 13 min full cycle
-        self.mea_concentration = kwargs.get("mea_concentration", 5.0)  # kmol m⁻³
-        self.airflow_rate = kwargs.get("airflow_rate", 0.0123)        # m³ s⁻¹
-        self.desorption_vacuum_pressure = kwargs.get("desorption_vacuum_pressure", 0.2)  # kPa
+        if self._moles_amine_total_in_solution > 0 and self.CO2_MOLAR_MASS_KG_MOL > 1e-9:
+            self._max_co2_capacity_kg = self._moles_amine_total_in_solution * \
+                                        self.max_co2_loading_mol_co2_per_mol_amine * \
+                                        self.CO2_MOLAR_MASS_KG_MOL
+        else:
+            self._max_co2_capacity_kg = 0.0
 
-        # bed scheduling
-        self._phase_time = 0.0
+        self._max_h2o_capacity_kg = self.amine_solution_mass_kg * self.max_h2o_loading_kg_h2o_per_kg_amine_solution
+        self._verify_initial_conditions()
 
-        # Start all beds regenerated
-        self._init_bed_states()
+    def _verify_initial_conditions(self):
+        if self.power_source is None: raise ValueError("Power source cannot be None.")
+        if self._parent is None: raise ValueError("Parent air compartment cannot be None.")
+        if not self.bed_volume_m3 > 0: raise ValueError(f"Bed volume must be positive: {self.bed_volume_m3}")
+        if not self.CO2_MOLAR_MASS_KG_MOL > 1e-9: raise ValueError("CO2_MOLAR_MASS_KG_MOL is not valid.")
+        if not self.H2O_MOLAR_MASS_KG_MOL > 1e-9: raise ValueError("H2O_MOLAR_MASS_KG_MOL is not valid.")
 
-        # External conditions (can be overwritten via setters)
-        self._p_tot_ext = 101.3      # kPa
-        self._p_co2_ext = 0.4        # kPa  (≈ 3 mmHg)
-        self._p_h2o_ext = 1.6        # kPa  (45 % RH)
-        self._ext_temperature = self.operating_temperature
+    def update(self, dt: float = 0.0333) -> float:
+        if dt <= 0: return 0.0
+        self._time_in_current_phase_s += dt
+        net_heat_produced_j = 0.0
 
-        # ------------------ run-time bookkeeping ---------------------------
-        # beds currently online for adsorption (list of indices)
-        self._active_beds = kwargs.get("active_beds",
-                                       list(range(self.number_of_beds)))
-        self._absorbing = True
+        if self._current_phase == self._ADSORPTION_PHASE:
+            net_heat_produced_j = self._adsorption_step(dt)
+            if self._time_in_current_phase_s >= self._adsorption_cycle_time_s:
+                self._current_phase = self._DESORPTION_PHASE
+                self._time_in_current_phase_s = 0.0
+        elif self._current_phase == self._DESORPTION_PHASE:
+            net_heat_produced_j = self._desorption_step(dt)
+            if self._time_in_current_phase_s >= self._desorption_cycle_time_s:
+                self._current_phase = self._COOLING_PHASE
+                self._time_in_current_phase_s = 0.0
+        elif self._current_phase == self._COOLING_PHASE:
+            net_heat_produced_j = self._cooling_step(dt)
+            if self._time_in_current_phase_s >= self._cooling_cycle_time_s:
+                self._current_phase = self._ADSORPTION_PHASE
+                self._time_in_current_phase_s = 0.0
+        return net_heat_produced_j
 
-        self.mass_co2_released = 0
-        self.mass_h2o_released = 0
+    def _adsorption_step(self, dt: float) -> float:
+        co2_partial_pressure_pa = self._parent.get_co2_pressure()
+        h2o_partial_pressure_pa = self._parent.get_h2o_pressure()
+        max_co2_available_in_parent_kg = self._parent.get_co2_mass()
+        max_h2o_available_in_parent_kg = self._parent.get_h2o_mass()
 
-    # ------------------------------------------------------------------
-    #            private helpers
-    # ------------------------------------------------------------------
-    def _init_bed_states(self):
-        # per-bed state arrays; one entry per bed
-        self._l_co2 = [0.0] * self.number_of_beds    # kmol
-        self._l_h2o = [0.0] * self.number_of_beds    # kmol
-        self._p_co2_g = [self._p_co2_ext] * self.number_of_beds
-        self._p_h2o_g = [self._p_h2o_ext] * self.number_of_beds
+        # --- CO2 Adsorption ---
+        remaining_co2_capacity_in_bed_kg = max(0.0, self._max_co2_capacity_kg - self._co2_adsorbed_mass_kg)
+        potential_co2_adsorption_rate_kg_s = self.adsorption_rate_constant_co2 * \
+                                             co2_partial_pressure_pa * self.bed_volume_m3
+        co2_to_adsorb_this_dt_based_on_rate_kg = potential_co2_adsorption_rate_kg_s * dt
 
-    # ------------------------------------------------------------------
-    #              property setters
-    # ------------------------------------------------------------------
-    def set_cycle_time(self, sec: float):
-        self.cycle_time = max(60.0, float(sec))  # min 1 min
+        # Tentative amount based on rate and bed capacity
+        co2_adsorbed_this_step_kg = min(co2_to_adsorb_this_dt_based_on_rate_kg, remaining_co2_capacity_in_bed_kg)
 
-    def set_total_external_pressure(self, kpa: float):
-        self._p_tot_ext = max(1.0, float(kpa))
+        # Limit by what's available in the parent, ensuring stability
+        if co2_adsorbed_this_step_kg >= max_co2_available_in_parent_kg:
+            # If trying to take more than or equal to what's available
+            if max_co2_available_in_parent_kg > 1e-12:  # Only apply factor if a meaningful amount is there
+                co2_adsorbed_this_step_kg = max_co2_available_in_parent_kg * self._NUMERICAL_STABILITY_FACTOR
+            else:  # If available is negligible or zero, take what's there (which is negligible or zero)
+                co2_adsorbed_this_step_kg = max_co2_available_in_parent_kg
 
-    def set_external_co2_partial_pressure(self, kpa: float):
-        self._p_co2_ext = max(0.0, float(kpa))
+        co2_adsorbed_this_step_kg = max(0.0, co2_adsorbed_this_step_kg)  # Ensure non-negative
 
-    def set_external_h2o_partial_pressure(self, kpa: float):
-        self._p_h2o_ext = max(0.0, float(kpa))
+        self._co2_adsorbed_mass_kg += co2_adsorbed_this_step_kg
+        co2_adsorption_rate_kg_s_actual = co2_adsorbed_this_step_kg / dt if dt > 1e-9 else 0.0
 
-    def set_absorbing_mode(self, absorbing: bool):
-        self._absorbing = bool(absorbing)
+        # --- H2O Adsorption ---
+        remaining_h2o_capacity_in_bed_kg = max(0.0, self._max_h2o_capacity_kg - self._h2o_adsorbed_mass_kg)
+        potential_h2o_adsorption_rate_kg_s = self.adsorption_rate_constant_h2o * \
+                                             h2o_partial_pressure_pa * self.bed_volume_m3
+        h2o_to_adsorb_this_dt_based_on_rate_kg = potential_h2o_adsorption_rate_kg_s * dt
 
-    def set_desorption_vacuum_pressure(self, kpa: float):
-        self.desorption_vacuum_pressure = max(0.01, float(kpa))
+        h2o_adsorbed_this_step_kg = min(h2o_to_adsorb_this_dt_based_on_rate_kg, remaining_h2o_capacity_in_bed_kg)
 
-    def set_air_flow_rate(self, m3_s: float):
-        self.airflow_rate = max(0.0, float(m3_s))
+        if h2o_adsorbed_this_step_kg >= max_h2o_available_in_parent_kg:
+            if max_h2o_available_in_parent_kg > 1e-12:
+                h2o_adsorbed_this_step_kg = max_h2o_available_in_parent_kg * self._NUMERICAL_STABILITY_FACTOR
+            else:
+                h2o_adsorbed_this_step_kg = max_h2o_available_in_parent_kg
 
-    def set_active_beds(self, active_beds: List[int]):
-        self._active_beds = [b for b in active_beds if 0 <= b < self.number_of_beds]
+        h2o_adsorbed_this_step_kg = max(0.0, h2o_adsorbed_this_step_kg)
 
-    def set_external_temperature(self, kelvin: float):
-        self._ext_temperature = max(250.0, float(kelvin))
+        self._h2o_adsorbed_mass_kg += h2o_adsorbed_this_step_kg
+        h2o_adsorption_rate_kg_s_actual = h2o_adsorbed_this_step_kg / dt if dt > 1e-9 else 0.0
 
-    # ------------------------------------------------------------------
-    #                         public interface
-    # ------------------------------------------------------------------
+        fluxes_to_parent = np.zeros(4, dtype=float)
+        fluxes_to_parent[air.CO2_INDEX] = -co2_adsorption_rate_kg_s_actual
+        fluxes_to_parent[air.H2O_INDEX] = -h2o_adsorption_rate_kg_s_actual
+        self._parent.apply_flux(fluxes_to_parent, dt, mode="mass")
 
-    def collect(self, amount_co2: float, amount_h2o: float, dt: float = 0.0333,
-                mode: str = "flux") -> tuple[float, float]:
-        """
-        Withdraw CO₂ and H₂O (kg) from internal stores.
-          mode="flux":   arguments are kg s⁻¹, integrate over dt
-          mode="amount": arguments are total kg to remove instantly
-        Returns the actually withdrawn masses (kg).
-        """
+        co2_moles_adsorbed = co2_adsorbed_this_step_kg / self.CO2_MOLAR_MASS_KG_MOL if self.CO2_MOLAR_MASS_KG_MOL > 1e-9 else 0.0
+        h2o_moles_adsorbed = h2o_adsorbed_this_step_kg / self.H2O_MOLAR_MASS_KG_MOL if self.H2O_MOLAR_MASS_KG_MOL > 1e-9 else 0.0
+
+        heat_from_co2_adsorption_j = co2_moles_adsorbed * self.heat_of_co2_absorption_j_mol
+        heat_from_h2o_adsorption_j = h2o_moles_adsorbed * self.heat_of_h2o_absorption_j_mol
+        total_heat_released_j = -(heat_from_co2_adsorption_j + heat_from_h2o_adsorption_j)
+
+        if self.amine_solution_mass_kg > 0 and self.amine_solution_specific_heat_j_kg_k > 0:
+            delta_temp_k = total_heat_released_j / (
+                        self.amine_solution_mass_kg * self.amine_solution_specific_heat_j_kg_k)
+            self._bed_temperature_k += delta_temp_k
+
+        self._bed_temperature_k = min(self._bed_temperature_k, self._desorption_target_temperature_k + 50.0)
+        return total_heat_released_j
+
+    def _desorption_step(self, dt: float) -> float:
+        net_heat_produced_by_subsystem_j = 0.0
+        if self._bed_temperature_k < self._desorption_target_temperature_k:
+            temp_increase_needed_k = self._desorption_target_temperature_k - self._bed_temperature_k
+            max_heating_rate_k_s = 2.0
+            max_temp_increase_this_step_k = max_heating_rate_k_s * dt
+            actual_temp_increase_k = max(0.0, min(temp_increase_needed_k, max_temp_increase_this_step_k))
+
+            if self.amine_solution_mass_kg > 0 and self.amine_solution_specific_heat_j_kg_k > 0:
+                thermal_energy_for_heating_j = actual_temp_increase_k * \
+                                               self.amine_solution_mass_kg * \
+                                               self.amine_solution_specific_heat_j_kg_k
+                energy_consumed_actual_j = self.power_source.consume_heat(thermal_energy_for_heating_j, dt=dt,
+                                                                          mode="energy")
+                if thermal_energy_for_heating_j > 1e-9:
+                    proportion_heated = energy_consumed_actual_j / thermal_energy_for_heating_j
+                    self._bed_temperature_k += actual_temp_increase_k * proportion_heated
+
+        if self._bed_temperature_k >= (self._desorption_target_temperature_k - 5.0):
+            potential_co2_desorption_rate_kg_s = self.desorption_rate_constant_co2 * self._co2_adsorbed_mass_kg
+            co2_desorbed_this_step_kg = max(0.0,
+                                            min(potential_co2_desorption_rate_kg_s * dt, self._co2_adsorbed_mass_kg))
+            potential_h2o_desorption_rate_kg_s = self.desorption_rate_constant_h2o * self._h2o_adsorbed_mass_kg
+            h2o_desorbed_this_step_kg = max(0.0,
+                                            min(potential_h2o_desorption_rate_kg_s * dt, self._h2o_adsorbed_mass_kg))
+
+            thermal_energy_demand_for_desorption_j = 0.0
+            if self.regeneration_energy_demand_j_per_kg_co2 > 0 and co2_desorbed_this_step_kg > 0:
+                thermal_energy_demand_for_desorption_j = co2_desorbed_this_step_kg * self.regeneration_energy_demand_j_per_kg_co2
+
+            energy_consumed_desorption_actual_j = 0.0
+            if thermal_energy_demand_for_desorption_j > 0:
+                energy_consumed_desorption_actual_j = self.power_source.consume_heat(
+                    thermal_energy_demand_for_desorption_j, dt=dt, mode="energy")
+
+            proportion_desorbed = 1.0
+            if thermal_energy_demand_for_desorption_j > 1e-9:
+                proportion_desorbed = energy_consumed_desorption_actual_j / thermal_energy_demand_for_desorption_j
+            elif co2_desorbed_this_step_kg > 0:
+                proportion_desorbed = 0.0
+
+            co2_desorbed_this_step_kg *= proportion_desorbed
+            h2o_desorbed_this_step_kg *= proportion_desorbed
+
+            self._co2_adsorbed_mass_kg -= co2_desorbed_this_step_kg
+            self._h2o_adsorbed_mass_kg -= h2o_desorbed_this_step_kg
+
+            self.mass_co2_ready_for_collection_kg += co2_desorbed_this_step_kg
+            self.mass_h2o_ready_for_collection_kg += h2o_desorbed_this_step_kg
+
+            net_heat_produced_by_subsystem_j -= energy_consumed_desorption_actual_j
+        return net_heat_produced_by_subsystem_j
+
+    def _cooling_step(self, dt: float) -> float:
+        net_heat_produced_by_subsystem_j = 0.0
+        if self._bed_temperature_k > self._cooling_target_temperature_k:
+            temp_difference_to_target_k = self._bed_temperature_k - self._cooling_target_temperature_k
+
+            cooling_electrical_power_w = 0.0
+            if self.amine_solution_mass_kg > 0:
+                cooling_electrical_power_w = self.cooling_power_factor_w_per_kg_k_diff * \
+                                             self.amine_solution_mass_kg * temp_difference_to_target_k
+            cooling_electrical_power_w = max(0.0, cooling_electrical_power_w)
+
+            electrical_energy_demanded_j = cooling_electrical_power_w * dt
+            actual_electrical_energy_consumed_j = self.power_source.consume_electricity(electrical_energy_demanded_j,
+                                                                                        dt=dt, mode="energy")
+
+            heat_removed_from_bed_j = 0.0
+            if self.cooling_system_cop > 1e-9:
+                heat_removed_from_bed_j = self.cooling_system_cop * actual_electrical_energy_consumed_j
+
+            actual_heat_removed_j_final = 0.0
+            if self.amine_solution_mass_kg > 0 and self.amine_solution_specific_heat_j_kg_k > 0:
+                potential_temp_decrease_k = heat_removed_from_bed_j / \
+                                            (self.amine_solution_mass_kg * self.amine_solution_specific_heat_j_kg_k)
+                actual_temp_decrease_k = min(potential_temp_decrease_k, temp_difference_to_target_k)
+                actual_temp_decrease_k = max(0.0, actual_temp_decrease_k)
+                self._bed_temperature_k -= actual_temp_decrease_k
+                actual_heat_removed_j_final = actual_temp_decrease_k * \
+                                              self.amine_solution_mass_kg * self.amine_solution_specific_heat_j_kg_k
+
+            net_heat_produced_by_subsystem_j = actual_heat_removed_j_final + actual_electrical_energy_consumed_j
+        return net_heat_produced_by_subsystem_j
+
+    def collect(self, amount_co2_kg: float, amount_h2o_kg: float, dt: float = 0.0333, mode: str = "flux") -> tuple[
+        float, float]:
+        co2_to_remove_kg = 0.0
+        h2o_to_remove_kg = 0.0
         if mode == "flux":
-            req_co2 = amount_co2 * dt
-            req_h2o = amount_h2o * dt
-        else:  # "amount"
-            req_co2 = amount_co2
-            req_h2o = amount_h2o
-        got_co2 = min(req_co2, self.mass_co2_released)
-        got_h2o = min(req_h2o, self.mass_h2o_released)
-        self.mass_co2_released -= got_co2
-        self.mass_h2o_released -= got_h2o
-        return got_co2, got_h2o
+            co2_to_remove_kg = amount_co2_kg * dt
+            h2o_to_remove_kg = amount_h2o_kg * dt
+        elif mode == "amount":
+            co2_to_remove_kg = amount_co2_kg
+            h2o_to_remove_kg = amount_h2o_kg
+        else:
+            raise ValueError(f"Invalid mode '{mode}' for collect method. Use 'flux' or 'amount'.")
+        actual_co2_removed_kg = max(0.0, min(co2_to_remove_kg, self.mass_co2_ready_for_collection_kg))
+        actual_h2o_removed_kg = max(0.0, min(h2o_to_remove_kg, self.mass_h2o_ready_for_collection_kg))
+        self.mass_co2_ready_for_collection_kg -= actual_co2_removed_kg
+        self.mass_h2o_ready_for_collection_kg -= actual_h2o_removed_kg
+        return actual_co2_removed_kg, actual_h2o_removed_kg
 
-    def update(self, dt: float = 0.0333, **kwargs) -> float:
-        """
-        Advance simulation dt [s]; return heat released [J].
-        """
-        # Allow on-the-fly overrides
-        for k, v in kwargs.items():
-            if hasattr(self, k):
-                setattr(self, k, v)
+    def get_bed_temperature_k(self) -> float:
+        return self._bed_temperature_k
 
-        # external environment may change
-        self._update_external_pressures_and_temperatures()
+    def get_co2_adsorbed_mass_kg(self) -> float:
+        return self._co2_adsorbed_mass_kg
 
-        # choose σ for this half-cycle
-        self._phase_time += dt
-        half_cycle = self.cycle_time * 0.5
-        if self._phase_time >= half_cycle:
-            self._phase_time -= half_cycle
-            self._absorbing = not self._absorbing
+    def get_h2o_adsorbed_mass_kg(self) -> float:
+        return self._h2o_adsorbed_mass_kg
 
-        sigma = 1 if self._absorbing else 0
+    def get_current_phase(self) -> str:
+        return self._current_phase
 
-        # ---------------- mass/power/heat balances ---------------------
-        total_heat_j = 0.0
-        for b in self._active_beds:
-            if sigma == 1:                          # ADSORPTION
-                h_gen = self._adsorption_step(b, dt)
-            else:                                   # DESORPTION
-                h_gen = self._desorption_step(b, dt)
-            total_heat_j += h_gen
+    def get_time_in_current_phase_s(self) -> float:
+        return self._time_in_current_phase_s
 
-        # blower power (applied continuously)
-        blower_power_w = self._blower_power()
-        self.power_source.consume_electricity(blower_power_w, dt)
+    def get_co2_loading_mol_per_mol_amine(self) -> float:
+        if self._moles_amine_total_in_solution < 1e-9 or self.CO2_MOLAR_MASS_KG_MOL < 1e-9: return 0.0
+        moles_co2_adsorbed = self._co2_adsorbed_mass_kg / self.CO2_MOLAR_MASS_KG_MOL
+        return moles_co2_adsorbed / self._moles_amine_total_in_solution
 
-        # produce sensible heat into room
-        total_heat_j += blower_power_w * dt  # fan motor → heat
-
-        if self.sabatier_reactor_output is not None:
-            self.sabatier_reactor_output.feed_reactants(self.mass_co2_released, 0, mode='amount')
-            self.mass_co2_released = 0
-
-        return total_heat_j
-
-    # ==================================================================
-    #                       core physics
-    # ==================================================================
-    def _adsorption_step(self, idx: int, dt: float) -> float:
-        """Adsorb CO₂ + H₂O for one bed; return heat J."""
-        sorb = self.sorbent_material
-        # gas phase initial P_CO2 in bed (drive towards ext)
-        p_co2 = self._p_co2_g[idx]
-        p_h2o = self._p_h2o_g[idx]
-
-        # mass-transfer driving force
-        c_star = p_co2 / sorb.henry_co2
-        l_co2_bulk = self._l_co2[idx] / self.bed_volume  # kmol m⁻³
-        rate_mt = self.interface_area * 1.0e-4 * (c_star - l_co2_bulk)  # kmol s⁻¹
-
-        # parallel reaction term
-        rate_rxn = sorb.k2 * self.mea_concentration * p_co2  # kmol s⁻¹
-
-        dot_l_co2 = rate_mt + rate_rxn
-        self._l_co2[idx] += dot_l_co2 * dt
-
-        # update gas partial pressure (simple perfect-mix tank model)
-        vg = self.bed_volume
-        r_specific = chem.Gas.UNIVERSAL_GAS_CONSTANT * 1e3  # J kmol⁻¹ K⁻¹
-        n_co2_gas = p_co2 * vg / (r_specific / 1000 * self.operating_temperature)
-        n_co2_gas -= dot_l_co2 * dt
-        p_co2_new = max(0.001, n_co2_gas * (r_specific / 1000) *
-                        self.operating_temperature / vg)
-        self._p_co2_g[idx] = p_co2_new
-
-        # approximate H₂O as purely mass transfer
-        c_star_h2o = self._p_h2o_ext / 17.5  # Henry H2O constant
-        l_h2o_bulk = self._l_h2o[idx] / self.bed_volume
-        dot_l_h2o = self.interface_area * 1.0e-4 * (c_star_h2o - l_h2o_bulk)
-        self._l_h2o[idx] += dot_l_h2o * dt
-
-        # bookkeeping mass fluxes (kg s⁻¹)
-        co2_mass_flux = dot_l_co2 * chem.CO2.molar_mass
-        h2o_mass_flux = dot_l_h2o * chem.H2O.molar_mass
-        # room mass balance
-        self._parent.apply_flux(np.asarray([0,
-                                            -co2_mass_flux,
-                                            0,
-                                            h2o_mass_flux], dtype=float),
-                                dt,
-                                mode="mass")
-
-        heat_kj = dot_l_co2 * sorb.delta_h_abs
-        return heat_kj * 1e3 * dt  # convert kJ → J
-
-    def _desorption_step(self, idx: int, dt: float) -> float:
-        """Vacuum-desorb: release load to space; return heat J (negative)."""
-        # simple exponential blowdown of sorbent loading back to 0
-        tau = self.cycle_time * 0.4
-        released_co2 = self._l_co2[idx] * (1 - math.exp(-dt / tau))
-        released_h2o = self._l_h2o[idx] * (1 - math.exp(-dt / tau))
-        self._l_co2[idx] -= released_co2
-        self._l_h2o[idx] -= released_h2o
-
-        # Update gas to vacuum
-        self._p_co2_g[idx] = self.desorption_vacuum_pressure
-        self._p_h2o_g[idx] = self.desorption_vacuum_pressure
-
-        self.mass_h2o_released += released_h2o * chem.H2O.molar_mass
-        self.mass_co2_released += released_co2 * chem.CO2.molar_mass
-
-        # desorption is slightly endothermic w.r.t. cabin
-        heat_kj = -released_co2 * self.sorbent_material.delta_h_abs * 0.3
-        return heat_kj * 1e3  # J
-
-    # ------------------------------------------------------------------
-    # blower power using QΔp/η (Ergun Δp estimate)
-    # ------------------------------------------------------------------
-    def _blower_power(self) -> float:
-        v_face = self.airflow_rate / (self.interface_area / 2)  # divide because ½ beds online
-        dp = 800.0 * (v_face / 0.35) ** 2                      # simple scaling to 0.9 kPa at 0.35 m/s
-        return self.airflow_rate * dp / self.power_efficiency  # W
-
-    # ------------------------------------------------------------------
-    # placeholder for external env update (user will fill)
-    # ------------------------------------------------------------------
-    def _update_external_pressures_and_temperatures(self) -> None:
-        self._ext_temperature = self._parent.get_temperature()
-        pressures = self._parent.get_pressures()
-        self._p_tot_ext = np.sum(pressures)
-        self._p_co2_ext = pressures[air.CO2_INDEX]
-        self._p_h2o_ext = pressures[air.H2O_INDEX]
-
-
+    def get_h2o_loading_kg_per_kg_solution(self) -> float:
+        if self.amine_solution_mass_kg < 1e-9: return 0.0
+        return self._h2o_adsorbed_mass_kg / self.amine_solution_mass_kg
 

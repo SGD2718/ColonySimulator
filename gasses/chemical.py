@@ -4,7 +4,7 @@ class Chemical:
     def __init__(self, name: str, molar_mass: float):
         self.name = name
         self.molar_mass = molar_mass
-        self.molar_mass_kg_mol = molar_mass * 1000
+        self.molar_mass_kg_mol = molar_mass / 1000
 
     def __repr__(self):
         return self.name

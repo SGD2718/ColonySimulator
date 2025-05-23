@@ -4,13 +4,20 @@ import chemicals as chem
 
 
 class AirCompartment:
-    from air_graph import AirGraph
 
     def __init__(self,
-                 parent: AirGraph | None,
+                 parent,
                  name: str,
                  volume: float,
                  **kwargs):
+        """
+
+        :param parent: The parent object
+        :type parent: AirGraph | None
+        :param name: name of the air compartment
+        :param volume: volume of the air compartment
+        :keyword filter: filter for which gasses to let through
+        """
         self.parent = parent
         self.name = name
         self.volume = volume
@@ -103,9 +110,9 @@ class AirCompartment:
         Applies flux changes o2 and co2 density
         :param fluxes: gas fluxes
         :param dt: time step since last update
-        :param mode: mode to apply ("density", "mass")
+        :keyword mode: mode to apply ("density", "mass")
         """
-        mode = kwargs.get("mode", "density")
+        mode = kwargs.get("mode", "mass")
 
         if mode == "density":
             self.densities += fluxes * dt
@@ -117,6 +124,11 @@ class AirCompartment:
     def add_gas(self,
                 amounts: np.ndarray[tuple[int, ...], np.dtype[float]],
                 **kwargs) -> None:
+        """
+        Changes gas amounts in the air compartment.
+        :param amounts: amounts of each gas to add
+        :keyword mode: mode to apply ("density", "mass")
+        """
 
         mode = kwargs.get("mode", "density")
         if mode == "density":
@@ -125,7 +137,6 @@ class AirCompartment:
             self.densities += amounts / self.volume
 
         assert np.all(self.densities >= 0)
-
 
 
 class Atmosphere(AirCompartment):
@@ -230,8 +241,3 @@ class Atmosphere(AirCompartment):
                  masses: np.ndarray[tuple[int, ...], np.dtype[float]],
                  **kwargs) -> None:
         pass
-
-
-print(f"O2: {Atmosphere.O2_DENSITY} kg/m^3")
-print(f"CO2: {Atmosphere.CO2_DENSITY} kg/m^3")
-print(f"N2: {Atmosphere.N2_DENSITY} kg/m^3")

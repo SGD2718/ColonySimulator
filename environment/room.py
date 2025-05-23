@@ -1,6 +1,3 @@
-from abc import ABC, abstractmethod
-from person import *
-from light import *
 from door import Door
 from gasses.air_compartment import *
 from subsystem import Subsystem

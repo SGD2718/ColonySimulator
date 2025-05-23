@@ -1,12 +1,10 @@
 import numpy as np
 import chemicals as chem
+from air_valve import *
+from air_compartment import *
 
 
 class AirGraph:
-
-    from air_valve import AirValve
-    from air_compartment import AirCompartment
-
     def __init__(self,
                  name: str,
                  compartments: list[AirCompartment],
